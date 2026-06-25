@@ -17,10 +17,6 @@ import android.view.WindowManager
 import androidx.appcompat.app.AppCompatActivity
 import com.twitchalarm.databinding.ActivityAlarmBinding
 
-/**
- * Полноэкранный будильник — открывается поверх lock screen,
- * когда начинается стрим на Twitch.
- */
 class AlarmActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityAlarmBinding
@@ -40,7 +36,6 @@ class AlarmActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Показываем поверх lock screen
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
@@ -69,7 +64,6 @@ class AlarmActivity : AppCompatActivity() {
     private fun bindUI(streamer: String, title: String, game: String, viewers: Int) {
         binding.tvStreamerName.text = streamer
         binding.tvLiveBadge.text   = "🔴 В ЭФИРЕ"
-
         binding.tvStreamTitle.text = title.ifEmpty { "Начался стрим!" }
 
         val parts = mutableListOf<String>()
@@ -84,13 +78,11 @@ class AlarmActivity : AppCompatActivity() {
         }
         binding.tvMeta.text = parts.joinToString(" · ")
 
-        // Кнопка "Закрыть будильник"
         binding.btnDismiss.setOnClickListener {
             stopAlarm()
             finish()
         }
 
-        // Кнопка "Смотреть" — открывает Twitch
         binding.btnWatch.setOnClickListener {
             stopAlarm()
             val twitchIntent = packageManager.getLaunchIntentForPackage("tv.twitch.android.app")
@@ -110,7 +102,6 @@ class AlarmActivity : AppCompatActivity() {
     private fun startAlarmSound() {
         audioManager = getSystemService(AudioManager::class.java)
 
-        // 1. Запрашиваем аудио-фокус — без него Android может заглушить звук
         val audioAttrs = AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_ALARM)
             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
@@ -128,17 +119,9 @@ class AlarmActivity : AppCompatActivity() {
             audioManager?.requestAudioFocus(null, AudioManager.STREAM_ALARM, AudioManager.AUDIOFOCUS_GAIN)
         }
 
-        // 2. Принудительно выставляем громкость будильника на максимум
-        //    (телефон мог быть в беззвучном режиме — будильник обходит его)
         val maxVolume = audioManager?.getStreamMaxVolume(AudioManager.STREAM_ALARM) ?: 7
-        audioManager?.setStreamVolume(
-            AudioManager.STREAM_ALARM,
-            maxVolume,
-            0  // без системного звука смены громкости
-        )
+        audioManager?.setStreamVolume(AudioManager.STREAM_ALARM, maxVolume, 0)
 
-        // 3. Пробуем несколько URI по очереди — на некоторых устройствах
-        //    TYPE_ALARM может быть null или сломан
         val candidates: List<Uri?> = listOf(
             RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM),
             RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE),
@@ -148,7 +131,7 @@ class AlarmActivity : AppCompatActivity() {
         )
 
         val uri = candidates.firstOrNull { it != null } ?: run {
-            Log.e(TAG, "Не найден ни один звуковой URI — будильник без звука")
+            Log.e(TAG, "Не найден ни один звуковой URI")
             return
         }
 
@@ -157,12 +140,12 @@ class AlarmActivity : AppCompatActivity() {
                 setAudioAttributes(audioAttrs)
                 setDataSource(this@AlarmActivity, uri)
                 isLooping = true
-
-                // prepareAsync безопаснее чем prepare() — не блокирует UI поток
-                setOnPreparedListener { start() }
+                setOnPreparedListener { 
+                    Log.d(TAG, "MediaPlayer prepared, starting...")
+                    start() 
+                }
                 setOnErrorListener { _, what, extra ->
                     Log.e(TAG, "MediaPlayer error: what= extra=")
-                    // Если основной URI сломан — пробуем следующий
                     tryFallbackSound(candidates, uri, audioAttrs)
                     true
                 }
@@ -174,14 +157,7 @@ class AlarmActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Если основной звук не сработал — перебираем оставшиеся URI.
-     */
-    private fun tryFallbackSound(
-        candidates: List<Uri?>,
-        failedUri: Uri?,
-        audioAttrs: AudioAttributes
-    ) {
+    private fun tryFallbackSound(candidates: List<Uri?>, failedUri: Uri?, audioAttrs: AudioAttributes) {
         val fallback = candidates.firstOrNull { it != null && it != failedUri } ?: return
         try {
             mediaPlayer?.release()
@@ -189,7 +165,10 @@ class AlarmActivity : AppCompatActivity() {
                 setAudioAttributes(audioAttrs)
                 setDataSource(this@AlarmActivity, fallback)
                 isLooping = true
-                setOnPreparedListener { start() }
+                setOnPreparedListener { 
+                    Log.d(TAG, "Fallback MediaPlayer prepared, starting...")
+                    start() 
+                }
                 prepareAsync()
             }
         } catch (e: Exception) {
@@ -220,7 +199,6 @@ class AlarmActivity : AppCompatActivity() {
         } catch (_: Exception) {}
         mediaPlayer = null
 
-        // Отпускаем аудио-фокус
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             audioFocusRequest?.let { audioManager?.abandonAudioFocusRequest(it) }
         } else {
@@ -236,7 +214,5 @@ class AlarmActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
-    override fun onBackPressed() {
-        // Блокируем кнопку Назад — будильник можно отключить только кнопками на экране
-    }
+    override fun onBackPressed() {}
 }
