@@ -1,4 +1,4 @@
-package com.twitchalarm.ui
+﻿package com.twitchalarm.ui
 
 import android.Manifest
 import android.content.Intent
@@ -7,6 +7,8 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.view.Menu
+import android.view.MenuItem
 import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -53,13 +55,101 @@ class MainActivity : AppCompatActivity() {
         observeStreamers()
         requestNotificationPermission()
 
-        // Запускаем фоновую проверку
         BootReceiver.scheduleWork(this)
     }
 
     private fun setupToolbar() {
         setSupportActionBar(binding.toolbar)
         binding.toolbar.title = ""
+        supportActionBar?.setDisplayHomeAsUpEnabled(false)
+    }
+
+    override fun onCreateOptionsMenu(menu: Menu?): Boolean {
+        menuInflater.inflate(R.menu.main_menu, menu)
+        return true
+    }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean {
+        when (item.itemId) {
+            R.id.action_check_now -> {
+                forceCheckNow()
+                return true
+            }
+        }
+        return super.onOptionsItemSelected(item)
+    }
+
+    private fun forceCheckNow() {
+        Toast.makeText(this, "🔄 Проверка запущена...", Toast.LENGTH_SHORT).show()
+        
+        lifecycleScope.launch {
+            val streamers = withContext(Dispatchers.IO) {
+                db.streamerDao().getAll()
+            }
+            
+            if (streamers.isEmpty()) {
+                Toast.makeText(this@MainActivity, "📭 Нет стримеров для проверки", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            
+            val logins = streamers.filter { it.notifyEnabled }.map { it.login }
+            if (logins.isEmpty()) {
+                Toast.makeText(this@MainActivity, "⚠️ Все стримеры отключены", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            
+            Toast.makeText(this@MainActivity, "🔍 Проверяем  стримеров...", Toast.LENGTH_SHORT).show()
+            
+            val results = withContext(Dispatchers.IO) {
+                TwitchApi.checkStreams(logins)
+            }
+            
+            var foundLive = false
+            results.forEach { info ->
+                val prev = withContext(Dispatchers.IO) {
+                    db.streamerDao().getByLogin(info.login)
+                } ?: return@forEach
+                
+                withContext(Dispatchers.IO) {
+                    db.streamerDao().updateLiveStatus(
+                        login       = info.login,
+                        isLive      = info.isLive,
+                        title       = info.title,
+                        viewers     = info.viewerCount,
+                        game        = info.gameName,
+                        displayName = info.displayName
+                    )
+                }
+                
+                if (info.isLive && prev.notifyEnabled) {
+                    foundLive = true
+                    showAlarmForStreamer(
+                        displayName = info.displayName,
+                        title = info.title,
+                        game = info.gameName,
+                        viewers = info.viewerCount
+                    )
+                }
+            }
+            
+            val msg = if (foundLive) {
+                "🔴 Найден стример в эфире!"
+            } else {
+                "✅ Все стримеры офлайн"
+            }
+            Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun showAlarmForStreamer(displayName: String, title: String, game: String, viewers: Int) {
+        val intent = Intent(this, AlarmActivity::class.java).apply {
+            putExtra(AlarmActivity.EXTRA_STREAMER, displayName)
+            putExtra(AlarmActivity.EXTRA_TITLE, title)
+            putExtra(AlarmActivity.EXTRA_GAME, game)
+            putExtra(AlarmActivity.EXTRA_VIEWERS, viewers)
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        }
+        startActivity(intent)
     }
 
     private fun setupRecyclerView() {
@@ -90,7 +180,6 @@ class MainActivity : AppCompatActivity() {
             addStreamer(input)
         }
 
-        // Добавление по Enter
         binding.etNickname.setOnEditorActionListener { _, _, _ ->
             binding.btnAdd.performClick()
             true
@@ -102,7 +191,6 @@ class MainActivity : AppCompatActivity() {
         binding.progressAdd.visibility = View.VISIBLE
 
         lifecycleScope.launch {
-            // Проверяем, не добавлен ли уже
             val existing = withContext(Dispatchers.IO) {
                 db.streamerDao().getByLogin(login)
             }
@@ -112,7 +200,6 @@ class MainActivity : AppCompatActivity() {
                 return@launch
             }
 
-            // Проверяем, существует ли стример на Twitch
             val info = withContext(Dispatchers.IO) { TwitchApi.checkStream(login) }
 
             if (info == null) {
@@ -136,8 +223,11 @@ class MainActivity : AppCompatActivity() {
 
             binding.etNickname.setText("")
 
-            val msg = if (info.isLive) "✅ ${info.displayName} добавлен — сейчас в эфире!"
-                      else "✅ ${info.displayName.ifEmpty { login }} добавлен"
+            val msg = if (info.isLive) {
+                "🔴  уже в эфире!"
+            } else {
+                "✅  добавлен"
+            }
             Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
             resetAddButton()
         }
@@ -163,7 +253,7 @@ class MainActivity : AppCompatActivity() {
     private fun confirmDelete(streamer: Streamer) {
         AlertDialog.Builder(this)
             .setTitle("Удалить стримера?")
-            .setMessage("${streamer.displayName.ifEmpty { streamer.login }} будет удалён из списка.")
+            .setMessage(" будет удалён из списка.")
             .setPositiveButton("Удалить") { _, _ ->
                 lifecycleScope.launch(Dispatchers.IO) {
                     db.streamerDao().delete(streamer)

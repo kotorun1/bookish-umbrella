@@ -24,6 +24,7 @@ drawable bg_offline
 drawable ic_launcher_background
 drawable ic_twitch
 drawable ic_twitch_logo
+id action_check_now
 id appBarLayout
 id btnAdd
 id btnDelete
@@ -47,6 +48,7 @@ id viewLiveIndicator
 layout activity_alarm
 layout activity_main
 layout item_streamer
+menu main_menu
 mipmap ic_launcher
 mipmap ic_launcher_round
 string app_name

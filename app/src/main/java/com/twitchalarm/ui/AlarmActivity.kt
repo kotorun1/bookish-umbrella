@@ -36,16 +36,31 @@ class AlarmActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // ===== ВАЖНО: Показываем поверх lock screen =====
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
-        } else {
-            @Suppress("DEPRECATION")
-            window.addFlags(
-                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-                WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON   or
-                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
-            )
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        }
+
+        // Дополнительные флаги для старых версий
+        @Suppress("DEPRECATION")
+        window.addFlags(
+            WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+            WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+            WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
+            WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD or
+            WindowManager.LayoutParams.FLAG_FULLSCREEN
+        )
+
+        // Для Android 10+ также включаем immersive режим
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            window.attributes.layoutInDisplayCutoutMode =
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         }
 
         binding = ActivityAlarmBinding.inflate(layoutInflater)
@@ -59,6 +74,8 @@ class AlarmActivity : AppCompatActivity() {
         bindUI(streamer, title, game, viewers)
         startAlarmSound()
         startVibration()
+
+        Log.d(TAG, "AlarmActivity создана, показывается поверх блокировки")
     }
 
     private fun bindUI(streamer: String, title: String, game: String, viewers: Int) {
@@ -140,39 +157,15 @@ class AlarmActivity : AppCompatActivity() {
                 setAudioAttributes(audioAttrs)
                 setDataSource(this@AlarmActivity, uri)
                 isLooping = true
-                setOnPreparedListener { 
-                    Log.d(TAG, "MediaPlayer prepared, starting...")
-                    start() 
-                }
+                setOnPreparedListener { start() }
                 setOnErrorListener { _, what, extra ->
                     Log.e(TAG, "MediaPlayer error: what= extra=")
-                    tryFallbackSound(candidates, uri, audioAttrs)
                     true
                 }
                 prepareAsync()
             }
         } catch (e: Exception) {
             Log.e(TAG, "MediaPlayer init failed: ")
-            tryFallbackSound(candidates, uri, audioAttrs)
-        }
-    }
-
-    private fun tryFallbackSound(candidates: List<Uri?>, failedUri: Uri?, audioAttrs: AudioAttributes) {
-        val fallback = candidates.firstOrNull { it != null && it != failedUri } ?: return
-        try {
-            mediaPlayer?.release()
-            mediaPlayer = MediaPlayer().apply {
-                setAudioAttributes(audioAttrs)
-                setDataSource(this@AlarmActivity, fallback)
-                isLooping = true
-                setOnPreparedListener { 
-                    Log.d(TAG, "Fallback MediaPlayer prepared, starting...")
-                    start() 
-                }
-                prepareAsync()
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Fallback sound also failed: ")
         }
     }
 
