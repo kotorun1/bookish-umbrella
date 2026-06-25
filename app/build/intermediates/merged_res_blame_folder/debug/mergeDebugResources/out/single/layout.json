@@ -1,14 +1,18 @@
 [
     {
-        "merged": "com.twitchalarm.app-mergeDebugResources-42:/layout/item_streamer.xml",
-        "source": "com.twitchalarm.app-main-45:/layout/item_streamer.xml"
+        "merged": "com.twitchalarm.app-mergeDebugResources-46:/layout/item_streamer.xml",
+        "source": "com.twitchalarm.app-main-49:/layout/item_streamer.xml"
     },
     {
-        "merged": "com.twitchalarm.app-mergeDebugResources-42:/layout/activity_alarm.xml",
-        "source": "com.twitchalarm.app-main-45:/layout/activity_alarm.xml"
+        "merged": "com.twitchalarm.app-mergeDebugResources-46:/layout/activity_settings.xml",
+        "source": "com.twitchalarm.app-main-49:/layout/activity_settings.xml"
     },
     {
-        "merged": "com.twitchalarm.app-mergeDebugResources-42:/layout/activity_main.xml",
-        "source": "com.twitchalarm.app-main-45:/layout/activity_main.xml"
+        "merged": "com.twitchalarm.app-mergeDebugResources-46:/layout/activity_alarm.xml",
+        "source": "com.twitchalarm.app-main-49:/layout/activity_alarm.xml"
+    },
+    {
+        "merged": "com.twitchalarm.app-mergeDebugResources-46:/layout/activity_main.xml",
+        "source": "com.twitchalarm.app-main-49:/layout/activity_main.xml"
     }
 ]

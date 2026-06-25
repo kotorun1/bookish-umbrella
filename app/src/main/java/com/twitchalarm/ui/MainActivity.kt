@@ -70,14 +70,18 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
-        when (item.itemId) {
-            R.id.action_check_now -> {
-                forceCheckNow()
-                return true
-            }
+    when (item.itemId) {
+        R.id.action_check_now -> {
+            forceCheckNow()
+            return true
         }
-        return super.onOptionsItemSelected(item)
+        R.id.action_settings -> {
+            startActivity(Intent(this, SettingsActivity::class.java))
+            return true
+        }
     }
+    return super.onOptionsItemSelected(item)
+}
 
     private fun forceCheckNow() {
         Toast.makeText(this, "🔄 Проверка запущена...", Toast.LENGTH_SHORT).show()
@@ -303,4 +307,5 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton("Пропустить", null)
             .show()
     }
+
 }

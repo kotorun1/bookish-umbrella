@@ -7,4 +7,9 @@
         android:title="🔄 Проверить сейчас"
         app:showAsAction="always" />
         
+    <item
+        android:id="@+id/action_settings"
+        android:title="⚙️ Настройки"
+        app:showAsAction="never" />
+        
 </menu>

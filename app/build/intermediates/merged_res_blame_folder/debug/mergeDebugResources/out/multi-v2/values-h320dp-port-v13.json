@@ -1,7 +1,7 @@
 {
     "logs": [
         {
-            "outputFile": "com.twitchalarm.app-mergeDebugResources-41:/values-h320dp-port-v13/values-h320dp-port-v13.xml",
+            "outputFile": "com.twitchalarm.app-mergeDebugResources-45:/values-h320dp-port-v13/values-h320dp-port-v13.xml",
             "map": [
                 {
                     "source": "C:\\Users\\Slava\\.gradle\\caches\\9.3.0\\transforms\\eade316aaeec6d9f4d576200d9a50255\\workspace\\transformed\\material-1.12.0\\res\\values-h320dp-port-v13\\values-h320dp-port-v13.xml",

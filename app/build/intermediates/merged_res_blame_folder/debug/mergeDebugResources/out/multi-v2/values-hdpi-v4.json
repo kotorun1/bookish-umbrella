@@ -1,7 +1,7 @@
 {
     "logs": [
         {
-            "outputFile": "com.twitchalarm.app-mergeDebugResources-41:/values-hdpi-v4/values-hdpi-v4.xml",
+            "outputFile": "com.twitchalarm.app-mergeDebugResources-45:/values-hdpi-v4/values-hdpi-v4.xml",
             "map": [
                 {
                     "source": "C:\\Users\\Slava\\.gradle\\caches\\9.3.0\\transforms\\5cda7e04769b78f3a19fe97c521aeee3\\workspace\\transformed\\appcompat-1.7.0\\res\\values-hdpi-v4\\values-hdpi-v4.xml",

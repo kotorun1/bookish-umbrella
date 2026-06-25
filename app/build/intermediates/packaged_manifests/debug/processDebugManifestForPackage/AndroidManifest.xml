@@ -53,7 +53,7 @@
             </intent-filter>
         </activity>
 
-        <!-- Alarm screen — shown on lock screen when stream starts -->
+        <!-- Alarm screen -->
         <activity
             android:name="com.twitchalarm.ui.AlarmActivity"
             android:exported="false"
@@ -62,7 +62,14 @@
             android:theme="@style/Theme.TwitchStreamAlarm.Alarm"
             android:turnScreenOn="true" />
 
-        <!-- Boot receiver — restores WorkManager after reboot -->
+        <!-- Settings screen -->
+        <activity
+            android:name="com.twitchalarm.ui.SettingsActivity"
+            android:exported="false"
+            android:parentActivityName="com.twitchalarm.ui.MainActivity"
+            android:theme="@style/Theme.TwitchStreamAlarm" />
+
+        <!-- Boot receiver -->
         <receiver
             android:name="com.twitchalarm.work.BootReceiver"
             android:exported="true" >
@@ -180,6 +187,13 @@
                 <action android:name="androidx.work.diagnostics.REQUEST_DIAGNOSTICS" />
             </intent-filter>
         </receiver>
+
+        <uses-library
+            android:name="androidx.window.extensions"
+            android:required="false" />
+        <uses-library
+            android:name="androidx.window.sidecar"
+            android:required="false" />
 
         <service
             android:name="androidx.room.MultiInstanceInvalidationService"

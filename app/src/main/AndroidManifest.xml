@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Permissions -->
     <uses-permission android:name="android.permission.INTERNET" />
@@ -35,7 +36,7 @@
             </intent-filter>
         </activity>
 
-        <!-- Alarm screen — shown on lock screen when stream starts -->
+        <!-- Alarm screen -->
         <activity
             android:name=".ui.AlarmActivity"
             android:exported="false"
@@ -44,7 +45,14 @@
             android:screenOrientation="portrait"
             android:theme="@style/Theme.TwitchStreamAlarm.Alarm" />
 
-        <!-- Boot receiver — restores WorkManager after reboot -->
+        <!-- Settings screen -->
+        <activity
+            android:name=".ui.SettingsActivity"
+            android:exported="false"
+            android:parentActivityName=".ui.MainActivity"
+            android:theme="@style/Theme.TwitchStreamAlarm" />
+
+        <!-- Boot receiver -->
         <receiver
             android:name=".work.BootReceiver"
             android:exported="true">
@@ -53,13 +61,12 @@
             </intent-filter>
         </receiver>
 
-        <!-- Notification channel for WorkManager foreground -->
+        <!-- Remove WorkManager initializer -->
         <provider
             android:name="androidx.work.impl.WorkManagerInitializer"
             android:authorities="${applicationId}.workmanager-init"
             android:exported="false"
-            tools:node="remove"
-            xmlns:tools="http://schemas.android.com/tools" />
+            tools:node="remove" />
 
     </application>
 
