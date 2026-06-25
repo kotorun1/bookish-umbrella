@@ -1,0 +1,38 @@
+﻿@"
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Twitch colors -->
+    <color name="twitch_purple">#9146FF</color>
+    <color name="twitch_purple_light">#A970FF</color>
+    <color name="twitch_purple_dark">#772CE8</color>
+    
+    <!-- Theme colors -->
+    <color name="surface">#1A1A2E</color>
+    <color name="background">#0D0D1A</color>
+    
+    <!-- Alarm specific -->
+    <color name="alarm_background">#1A1A2E</color>
+    <color name="alarm_text_primary">#FFFFFF</color>
+    <color name="alarm_text_secondary">#B0B0C0</color>
+    
+    <!-- Text colors -->
+    <color name="text_primary">#FFFFFF</color>
+    <color name="text_secondary">#B0B0C0</color>
+    <color name="text_hint">#666680</color>
+    
+    <!-- UI elements -->
+    <color name="divider">#2A2A3E</color>
+    <color name="input_background">#2A2A3E</color>
+    
+    <!-- Switch colors -->
+    <color name="switch_thumb">#9146FF</color>
+    <color name="switch_track">#3A3A4E</color>
+    
+    <!-- Status colors -->
+    <color name="offline_grey">#666666</color>
+    <color name="live_red">#FF0000</color>
+    
+    <!-- Other -->
+    <color name="white">#FFFFFF</color>
+    <color name="black">#000000</color>
+</resources>

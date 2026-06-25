@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Simple notification icon — Twitch-style play button -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M4,2L2,6V20H7V22H10L12,20H16L22,14V2H4ZM20,13L16,17H12L10,19V17H6V4H20V13ZM17,7H15V12H17V7ZM12,7H10V12H12V7Z"/>
+</vector>
