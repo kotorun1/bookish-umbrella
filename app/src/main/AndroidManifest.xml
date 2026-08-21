@@ -10,10 +10,9 @@
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
-    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
-    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
         android:name=".App"
@@ -52,12 +51,54 @@
             android:parentActivityName=".ui.MainActivity"
             android:theme="@style/Theme.TwitchStreamAlarm" />
 
+        <!-- Local clock alarm management screen -->
+        <activity
+            android:name=".ui.ScheduledAlarmsActivity"
+            android:exported="false"
+            android:parentActivityName=".ui.MainActivity"
+            android:theme="@style/Theme.TwitchStreamAlarm" />
+
+        <!-- Foreground services -->
+        <service
+            android:name=".work.StreamCheckService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+        <service
+            android:name=".work.AlarmPlaybackService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
+
+        <!-- Home Agent FCM receiver. Data-only messages are handled in code. -->
+        <service
+            android:name=".work.HomeAgentMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <!-- Economy-mode receiver: invoked by a single rescheduled AlarmManager alarm. -->
+        <receiver
+            android:name=".work.EconomyCheckReceiver"
+            android:exported="false" />
+
+        <!-- Home Agent heartbeat freshness watchdog. -->
+        <receiver
+            android:name=".work.HomeAgentWatchdogReceiver"
+            android:exported="false" />
+
+        <!-- Exact and snoozed ordinary clock alarms. -->
+        <receiver
+            android:name=".work.ScheduledAlarmReceiver"
+            android:exported="false" />
+
         <!-- Boot receiver -->
         <receiver
             android:name=".work.BootReceiver"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
             </intent-filter>
         </receiver>
 

@@ -1,30 +1,75 @@
 ﻿package com.twitchalarm.ui
 
-import android.media.AudioAttributes
-import android.media.AudioManager
-import android.media.MediaPlayer
-import android.media.RingtoneManager
+import android.content.ClipData
+import android.app.AlarmManager
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
+import android.provider.Settings
+import android.provider.OpenableColumns
+import android.view.View
+import android.widget.AdapterView
 import android.widget.SeekBar
 import android.widget.Toast
+import androidx.core.widget.doAfterTextChanged
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.preference.PreferenceManager
+import com.google.firebase.messaging.FirebaseMessaging
 import com.twitchalarm.R
 import com.twitchalarm.databinding.ActivitySettingsBinding
-import com.twitchalarm.work.BootReceiver
+import com.twitchalarm.work.AlarmSoundPreferences
+import com.twitchalarm.work.MonitoringController
+import com.twitchalarm.work.FcmTokenStore
+import com.twitchalarm.work.MonitoringStrategy
+import com.twitchalarm.work.HomeAgentWatchdog
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class SettingsActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivitySettingsBinding
-    private lateinit var audioManager: AudioManager
+
+    private val playlistPicker = registerForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isEmpty()) return@registerForActivityResult
+        val readableUris = uris.filter { uri -> persistReadPermission(uri) }
+        if (readableUris.isEmpty()) {
+            Toast.makeText(this, "Не удалось сохранить доступ к выбранным трекам", Toast.LENGTH_SHORT).show()
+            return@registerForActivityResult
+        }
+        val previousUris = AlarmSoundPreferences.playlist(this)
+        val mergedUris = (previousUris + readableUris).distinct()
+        PreferenceManager.getDefaultSharedPreferences(this)
+            .edit()
+            .putStringSet(KEY_ALARM_PLAYLIST, mergedUris.map(Uri::toString).toSet())
+            .apply()
+        updatePlaylistSummary()
+        val addedCount = mergedUris.size - previousUris.size
+        Toast.makeText(this, "Добавлено: $addedCount, всего: ${mergedUris.size}", Toast.LENGTH_SHORT).show()
+    }
 
     companion object {
         const val KEY_CHECK_INTERVAL = "check_interval_minutes"
         const val KEY_ALARM_VOLUME = "alarm_volume_percent"
+        const val KEY_MONITORING_STRATEGY = "monitoring_strategy"
+        const val KEY_ALARM_PLAYLIST = "alarm_playlist_uris"
+        const val KEY_ALARM_FADE_SECONDS = "alarm_fade_seconds"
+        const val KEY_HOME_AGENT_WATCHDOG_INTERVAL = "home_agent_watchdog_interval_minutes"
+        const val KEY_HOME_AGENT_MISSED_HEARTBEATS = "home_agent_missed_heartbeats"
+        const val KEY_HOME_AGENT_FALLBACK_STRATEGY = "home_agent_fallback_strategy"
+        const val KEY_HOME_AGENT_AUTO_RETURN = "home_agent_auto_return"
+        const val KEY_HOME_AGENT_FALLBACK_ENABLED = "home_agent_fallback_enabled"
+        const val KEY_HOME_AGENT_PARALLEL_BACKUP = "home_agent_parallel_backup"
         const val DEFAULT_INTERVAL = 5
         const val DEFAULT_VOLUME = 100
+        const val DEFAULT_FADE_SECONDS = 30
+        const val MAX_FADE_SECONDS = 120
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -32,11 +77,15 @@ class SettingsActivity : AppCompatActivity() {
         binding = ActivitySettingsBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        audioManager = getSystemService(AudioManager::class.java)
-
         setupToolbar()
         loadSettings()
         setupListeners()
+        refreshFcmToken()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        updateHomeAgentControls()
     }
 
     private fun setupToolbar() {
@@ -47,103 +96,372 @@ class SettingsActivity : AppCompatActivity() {
 
     private fun loadSettings() {
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val interval = prefs.getInt(KEY_CHECK_INTERVAL, DEFAULT_INTERVAL).coerceIn(1, 15)
+        val volumePercent = prefs.getInt(KEY_ALARM_VOLUME, DEFAULT_VOLUME).coerceIn(0, 100)
+        val fadeSeconds = prefs.getInt(KEY_ALARM_FADE_SECONDS, DEFAULT_FADE_SECONDS)
+            .coerceIn(0, MAX_FADE_SECONDS)
+        val strategy = MonitoringStrategy.fromStoredValue(
+            prefs.getString(KEY_MONITORING_STRATEGY, MonitoringStrategy.RELIABLE.storedValue)
+        )
 
-        // Интервал проверки
-        val interval = prefs.getInt(KEY_CHECK_INTERVAL, DEFAULT_INTERVAL)
         binding.seekBarInterval.progress = interval - 1
         binding.tvIntervalValue.text = "$interval мин"
-
-        // Громкость будильника
-        val volumePercent = prefs.getInt(KEY_ALARM_VOLUME, DEFAULT_VOLUME)
         binding.seekBarVolume.progress = volumePercent
         binding.tvVolumeValue.text = "$volumePercent%"
+        binding.seekBarFade.progress = fadeSeconds
+        binding.tvFadeValue.text = formatFadeSeconds(fadeSeconds)
+        binding.rgMonitoringStrategy.check(
+            when (strategy) {
+                MonitoringStrategy.RELIABLE -> R.id.rbReliable
+                MonitoringStrategy.ECONOMY -> R.id.rbEconomy
+                MonitoringStrategy.HOME_AGENT -> R.id.rbHomeAgent
+            }
+        )
 
-        binding.tvStatus.text = "Проверка каждые $interval минут"
+        val watchdogMinutes = HomeAgentWatchdog.intervalMinutes(this)
+        binding.seekBarHomeAgentWatchdog.progress = watchdogProgress(watchdogMinutes)
+        binding.tvHomeAgentWatchdogValue.text = "$watchdogMinutes мин"
+        binding.etMissedHeartbeats.setText(HomeAgentWatchdog.missedHeartbeats(this).toString())
+        binding.spinnerHomeAgentFallback.setSelection(
+            if (HomeAgentWatchdog.fallbackStrategy(this) == MonitoringStrategy.RELIABLE) 0 else 1
+        )
+        binding.switchHomeAgentAutoReturn.isChecked = HomeAgentWatchdog.autoReturnEnabled(this)
+        binding.switchHomeAgentFallbackEnabled.isChecked = HomeAgentWatchdog.fallbackEnabled(this)
+        binding.switchHomeAgentParallelBackup.isChecked = HomeAgentWatchdog.parallelBackupEnabled(this)
+        updateHomeAgentControls(strategy)
+        updatePlaylistSummary()
     }
 
     private fun setupListeners() {
-        // Интервал проверки
         binding.seekBarInterval.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 val minutes = progress + 1
                 binding.tvIntervalValue.text = "$minutes мин"
                 if (fromUser) {
-                    val prefs = PreferenceManager.getDefaultSharedPreferences(this@SettingsActivity)
-                    prefs.edit().putInt(KEY_CHECK_INTERVAL, minutes).apply()
-                    binding.tvStatus.text = "Проверка каждые $minutes минут"
-                    restartWorkManager()
+                    PreferenceManager.getDefaultSharedPreferences(this@SettingsActivity)
+                        .edit()
+                        .putInt(KEY_CHECK_INTERVAL, minutes)
+                        .apply()
+                    val strategy = selectedStrategy()
+                    if (strategy == MonitoringStrategy.ECONOMY) {
+                        MonitoringController.reconfigure(this@SettingsActivity)
+                    }
                 }
             }
-            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+            override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
         })
 
-        // Громкость будильника
+        binding.rgMonitoringStrategy.setOnCheckedChangeListener { _, checkedId ->
+            val strategy = when (checkedId) {
+                R.id.rbEconomy -> MonitoringStrategy.ECONOMY
+                R.id.rbHomeAgent -> MonitoringStrategy.HOME_AGENT
+                else -> MonitoringStrategy.RELIABLE
+            }
+            PreferenceManager.getDefaultSharedPreferences(this)
+                .edit()
+                .putString(KEY_MONITORING_STRATEGY, strategy.storedValue)
+                .apply()
+            updateHomeAgentControls(strategy)
+            MonitoringController.reconfigure(this)
+        }
+
+        binding.seekBarHomeAgentWatchdog.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                val minutes = watchdogMinutesFromProgress(progress)
+                binding.tvHomeAgentWatchdogValue.text = "$minutes мин"
+                if (fromUser) {
+                    PreferenceManager.getDefaultSharedPreferences(this@SettingsActivity)
+                        .edit()
+                        .putInt(KEY_HOME_AGENT_WATCHDOG_INTERVAL, minutes)
+                        .apply()
+                    if (selectedStrategy() == MonitoringStrategy.HOME_AGENT) HomeAgentWatchdog.schedule(this@SettingsActivity)
+                    updateHomeAgentStatus()
+                }
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+            override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
+        })
+
+        binding.etMissedHeartbeats.doAfterTextChanged { text ->
+            val count = text?.toString()?.toIntOrNull()?.coerceIn(1, 9) ?: return@doAfterTextChanged
+            PreferenceManager.getDefaultSharedPreferences(this)
+                .edit()
+                .putInt(KEY_HOME_AGENT_MISSED_HEARTBEATS, count)
+                .apply()
+            if (selectedStrategy() == MonitoringStrategy.HOME_AGENT) HomeAgentWatchdog.schedule(this)
+            updateHomeAgentStatus()
+        }
+
+        binding.spinnerHomeAgentFallback.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                val fallback = if (position == 0) MonitoringStrategy.RELIABLE else MonitoringStrategy.ECONOMY
+                PreferenceManager.getDefaultSharedPreferences(this@SettingsActivity)
+                    .edit()
+                    .putString(KEY_HOME_AGENT_FALLBACK_STRATEGY, fallback.storedValue)
+                    .apply()
+                if (selectedStrategy() == MonitoringStrategy.HOME_AGENT && HomeAgentWatchdog.isFallbackActive(this@SettingsActivity)) {
+                    MonitoringController.startHomeAgentFallback(this@SettingsActivity, fallback)
+                }
+                updateHomeAgentStatus()
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+        }
+
+        binding.switchHomeAgentAutoReturn.setOnCheckedChangeListener { _, checked ->
+            PreferenceManager.getDefaultSharedPreferences(this)
+                .edit()
+                .putBoolean(KEY_HOME_AGENT_AUTO_RETURN, checked)
+                .apply()
+            updateHomeAgentStatus()
+        }
+
+        binding.switchHomeAgentFallbackEnabled.setOnCheckedChangeListener { _, checked ->
+            PreferenceManager.getDefaultSharedPreferences(this)
+                .edit()
+                .putBoolean(KEY_HOME_AGENT_FALLBACK_ENABLED, checked)
+                .apply()
+            if (selectedStrategy() == MonitoringStrategy.HOME_AGENT) {
+                HomeAgentWatchdog.setFallbackEnabled(this, checked)
+            }
+            updateHomeAgentControls()
+        }
+
+        binding.switchHomeAgentParallelBackup.setOnCheckedChangeListener { _, checked ->
+            PreferenceManager.getDefaultSharedPreferences(this)
+                .edit()
+                .putBoolean(KEY_HOME_AGENT_PARALLEL_BACKUP, checked)
+                .apply()
+            if (selectedStrategy() == MonitoringStrategy.HOME_AGENT) {
+                MonitoringController.applyHomeAgentParallelBackup(this)
+            }
+            updateHomeAgentControls()
+        }
+
+        binding.btnReturnToHomeAgent.setOnClickListener {
+            HomeAgentWatchdog.returnToHomeAgent(this)
+            updateHomeAgentStatus()
+        }
+
+        binding.btnGrantHomeAgentExactAlarm.setOnClickListener { requestExactAlarmAccess() }
+
         binding.seekBarVolume.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 binding.tvVolumeValue.text = "$progress%"
                 if (fromUser) {
-                    val prefs = PreferenceManager.getDefaultSharedPreferences(this@SettingsActivity)
-                    prefs.edit().putInt(KEY_ALARM_VOLUME, progress).apply()
-                    applyVolume(progress)
+                    PreferenceManager.getDefaultSharedPreferences(this@SettingsActivity)
+                        .edit()
+                        .putInt(KEY_ALARM_VOLUME, progress)
+                        .apply()
                 }
             }
-            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+            override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
         })
 
-        // Кнопка "Тест звука"
-        binding.btnTestSound.setOnClickListener {
-            testAlarmSound()
-        }
-
-        // Кнопка "Проверить сейчас"
-        binding.btnCheckNow.setOnClickListener {
-            BootReceiver.scheduleWork(this)
-            Toast.makeText(this, "🔄 Проверка запущена", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    private fun applyVolume(percent: Int) {
-        val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
-        val volume = (maxVolume * percent / 100)
-        audioManager.setStreamVolume(AudioManager.STREAM_ALARM, volume, 0)
-    }
-
-    private fun testAlarmSound() {
-        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-        val percent = prefs.getInt(KEY_ALARM_VOLUME, DEFAULT_VOLUME)
-
-        // Показываем Toast только при тесте
-        Toast.makeText(this, "🔊 Тест звука ($percent%)", Toast.LENGTH_SHORT).show()
-
-        applyVolume(percent)
-
-        val audioAttrs = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_ALARM)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-            .build()
-
-        try {
-            val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
-            val player = MediaPlayer().apply {
-                setAudioAttributes(audioAttrs)
-                setDataSource(this@SettingsActivity, uri)
-                setOnPreparedListener { start() }
-                prepareAsync()
+        binding.seekBarFade.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                binding.tvFadeValue.text = formatFadeSeconds(progress)
+                if (fromUser) {
+                    PreferenceManager.getDefaultSharedPreferences(this@SettingsActivity)
+                        .edit()
+                        .putInt(KEY_ALARM_FADE_SECONDS, progress)
+                        .apply()
+                }
             }
-            Handler(Looper.getMainLooper()).postDelayed({
-                player.stop()
-                player.release()
-            }, 2000)
-        } catch (e: Exception) {
-            Toast.makeText(this, "❌ Ошибка: ${e.message}", Toast.LENGTH_SHORT).show()
+            override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+            override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
+        })
+
+        binding.btnChooseTracks.setOnClickListener { playlistPicker.launch(arrayOf("audio/*")) }
+        binding.btnClearTracks.setOnClickListener { clearPlaylist() }
+        binding.btnCopyFcmToken.setOnClickListener { copyFcmToken() }
+    }
+
+    private fun refreshFcmToken() {
+        val cached = FcmTokenStore.get(this)
+        if (cached != null) updateFcmTokenSummary(cached)
+        FirebaseMessaging.getInstance().token
+            .addOnSuccessListener { token ->
+                FcmTokenStore.save(this, token)
+                updateFcmTokenSummary(token)
+            }
+            .addOnFailureListener {
+                if (cached == null) binding.tvFcmTokenSummary.text = "FCM-токен пока недоступен"
+            }
+    }
+
+    private fun updateFcmTokenSummary(token: String) {
+        binding.tvFcmTokenSummary.text = "FCM-токен готов: ${token.take(8)}…${token.takeLast(6)}"
+    }
+
+    private fun copyFcmToken() {
+        val token = FcmTokenStore.get(this)
+        if (token == null) {
+            Toast.makeText(this, "FCM-токен ещё не получен", Toast.LENGTH_SHORT).show()
+            refreshFcmToken()
+            return
+        }
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("FCM token", token))
+        Toast.makeText(this, "FCM-токен скопирован", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun updateHomeAgentControls(strategy: MonitoringStrategy = selectedStrategy()) {
+        val homeAgentSelected = strategy == MonitoringStrategy.HOME_AGENT
+        val parallelBackup = homeAgentSelected && HomeAgentWatchdog.parallelBackupEnabled(this)
+        val fallbackEnabled = HomeAgentWatchdog.fallbackEnabled(this)
+        binding.localIntervalCard.visibility = if (homeAgentSelected && !parallelBackup) View.GONE else View.VISIBLE
+        binding.tvLocalIntervalTitle.text = if (parallelBackup) {
+            "⏱ Интервал двойной страховки"
+        } else {
+            "⏱ Интервал локальной проверки"
+        }
+        binding.tvLocalIntervalSummary.text = if (parallelBackup) {
+            "Телефон редко проверяет Twitch параллельно с быстрым Home Agent на ПК"
+        } else {
+            "Используется в режимах Стабильность и Экономия"
+        }
+        binding.homeAgentSettingsContainer.visibility = if (homeAgentSelected) View.VISIBLE else View.GONE
+        binding.etMissedHeartbeats.isEnabled = fallbackEnabled
+        binding.spinnerHomeAgentFallback.isEnabled = fallbackEnabled
+        binding.switchHomeAgentAutoReturn.isEnabled = fallbackEnabled
+        binding.btnGrantHomeAgentExactAlarm.visibility = if (homeAgentSelected && !canScheduleExactAlarms()) View.VISIBLE else View.GONE
+        if (homeAgentSelected) updateHomeAgentStatus()
+    }
+
+    private fun updateHomeAgentStatus() {
+        if (selectedStrategy() != MonitoringStrategy.HOME_AGENT) return
+        val fallback = HomeAgentWatchdog.isFallbackActive(this)
+        val fallbackEnabled = HomeAgentWatchdog.fallbackEnabled(this)
+        val parallelBackup = HomeAgentWatchdog.parallelBackupEnabled(this)
+        val lastHeartbeat = HomeAgentWatchdog.lastHeartbeatAt(this)
+        val receivedAt = HomeAgentWatchdog.lastHeartbeatReceivedAt(this)
+        val heartbeatResult = HomeAgentWatchdog.lastHeartbeatResult(this)
+        val lastFallbackAt = HomeAgentWatchdog.lastFallbackAt(this)
+        val fallbackReason = HomeAgentWatchdog.lastFallbackReason(this)
+        val strategyName = when (HomeAgentWatchdog.fallbackStrategy(this)) {
+            MonitoringStrategy.RELIABLE -> "Надёжный режим"
+            else -> "Экономия"
+        }
+        val receivedDetails = if (receivedAt > 0L) {
+            "Телефон принял: ${formatLocalTime(receivedAt)}"
+        } else {
+            "Телефон ещё не принял heartbeat"
+        }
+        val pulseDetails = heartbeatResult?.let { "Последний пульс: $it" }.orEmpty()
+        val modeDetails = buildString {
+            append(if (fallbackEnabled) "Подстраховка при потере ПК включена" else "Подстраховка при потере ПК выключена")
+            if (parallelBackup) append("; двойная страховка включена")
+        }
+        val fallbackDetails = if (lastFallbackAt > 0L) {
+            "Последний fallback: ${formatLocalTime(lastFallbackAt)}${fallbackReason?.let { "; $it" }.orEmpty()}"
+        } else {
+            "Fallback в этой сессии не включался"
+        }
+        binding.tvHomeAgentStatus.text = when {
+            fallback && HomeAgentWatchdog.autoReturnEnabled(this) ->
+                "Резервный режим: $strategyName. Ожидание двух heartbeat для возврата.\n$modeDetails\n$fallbackDetails\n$receivedDetails\n$pulseDetails"
+            fallback ->
+                "Резервный режим: $strategyName. Вернитесь вручную после восстановления ПК.\n$modeDetails\n$fallbackDetails\n$receivedDetails\n$pulseDetails"
+            lastHeartbeat == 0L ->
+                "Ожидание первого heartbeat от ПК.\n$modeDetails\n$receivedDetails\n$fallbackDetails"
+            else ->
+                "Home Agent на связи: heartbeat ${formatHeartbeatAge(lastHeartbeat)}\n$modeDetails\n$receivedDetails\n$pulseDetails\n$fallbackDetails"
+        }
+        binding.btnReturnToHomeAgent.visibility = if (fallback && !HomeAgentWatchdog.autoReturnEnabled(this)) {
+            View.VISIBLE
+        } else {
+            View.GONE
         }
     }
 
-    private fun restartWorkManager() {
-        BootReceiver.scheduleWork(this)
+    private fun canScheduleExactAlarms(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return true
+        val alarmManager = getSystemService(AlarmManager::class.java) ?: return false
+        return alarmManager.canScheduleExactAlarms()
     }
+
+    private fun requestExactAlarmAccess() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        startActivity(
+            Intent(
+                Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
+                Uri.parse("package:$packageName")
+            )
+        )
+    }
+
+    private fun formatLocalTime(timestamp: Long): String =
+        SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(timestamp))
+
+    private fun formatHeartbeatAge(timestamp: Long): String {
+        val seconds = ((System.currentTimeMillis() - timestamp).coerceAtLeast(0L) / 1_000L)
+        return when {
+            seconds < 60L -> "только что"
+            seconds < 120L -> "1 минуту назад"
+            else -> "${seconds / 60L} мин назад"
+        }
+    }
+
+    private fun watchdogMinutesFromProgress(progress: Int): Int = (progress.coerceIn(0, 4) + 1) * 5
+
+    private fun watchdogProgress(minutes: Int): Int = ((minutes.coerceIn(5, 25) / 5) - 1)
+
+    private fun selectedStrategy(): MonitoringStrategy = MonitoringStrategy.fromStoredValue(
+        PreferenceManager.getDefaultSharedPreferences(this).getString(
+            KEY_MONITORING_STRATEGY,
+            MonitoringStrategy.RELIABLE.storedValue
+        )
+    )
+
+    private fun currentInterval(): Int = PreferenceManager.getDefaultSharedPreferences(this)
+        .getInt(KEY_CHECK_INTERVAL, DEFAULT_INTERVAL)
+        .coerceIn(1, 15)
+
+
+    private fun persistReadPermission(uri: Uri): Boolean = try {
+        contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        true
+    } catch (_: SecurityException) {
+        false
+    }
+
+    private fun clearPlaylist() {
+        val current = AlarmSoundPreferences.playlist(this)
+        current.forEach { uri ->
+            runCatching { contentResolver.releasePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+        }
+        PreferenceManager.getDefaultSharedPreferences(this)
+            .edit()
+            .remove(KEY_ALARM_PLAYLIST)
+            .apply()
+        updatePlaylistSummary()
+    }
+
+    private fun updatePlaylistSummary() {
+        val tracks = AlarmSoundPreferences.playlist(this)
+        binding.tvPlaylistSummary.text = when (tracks.size) {
+            0 -> "Не выбран: будет использован системный звук будильника"
+            1 -> "Выбран 1 трек: ${displayName(tracks.first())}"
+            else -> "Выбрано ${tracks.size} трека: ${tracks.take(2).joinToString { displayName(it) }}…"
+        }
+        binding.btnClearTracks.isEnabled = tracks.isNotEmpty()
+    }
+
+    private fun displayName(uri: Uri): String = runCatching {
+        contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) cursor.getString(0)
+            else null
+        }
+    }.getOrNull() ?: "аудиофайл"
+
+    private fun formatFadeSeconds(seconds: Int): String = when (seconds) {
+        0 -> "Сразу"
+        1 -> "1 сек"
+        else -> "$seconds сек"
+    }
+
 
     override fun onSupportNavigateUp(): Boolean {
         onBackPressed()

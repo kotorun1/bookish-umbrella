@@ -1,7 +1,10 @@
-﻿package com.twitchalarm.ui
+package com.twitchalarm.ui
 
 import android.Manifest
+import android.app.NotificationManager
+import android.content.BroadcastReceiver
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -24,44 +27,70 @@ import com.twitchalarm.api.TwitchApi
 import com.twitchalarm.data.AppDatabase
 import com.twitchalarm.data.Streamer
 import com.twitchalarm.databinding.ActivityMainBinding
-import com.twitchalarm.work.BootReceiver
+import com.twitchalarm.work.AlarmPlaybackService
+import com.twitchalarm.work.HomeAgentWatchdog
+import com.twitchalarm.work.MonitoringController
+import com.twitchalarm.work.MonitoringStrategy
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class MainActivity : AppCompatActivity() {
-
     private lateinit var binding: ActivityMainBinding
     private lateinit var adapter: StreamerAdapter
-    private lateinit var db: AppDatabase
+    private lateinit var database: AppDatabase
+    private var synchronizingBulkToggle = false
 
-    private val notifPermLauncher = registerForActivityResult(
+    private val strategyStatusReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: android.content.Context?, intent: Intent?) {
+            if (intent?.action == HomeAgentWatchdog.ACTION_STATUS_CHANGED) {
+                refreshActiveStrategyIndicator()
+            }
+        }
+    }
+
+    private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (!granted) showNotifPermDialog()
+        if (granted) requestFullScreenPermissionIfNeeded() else showNotificationPermissionDialog()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
-
-        db = AppDatabase.getInstance(this)
+        database = AppDatabase.getInstance(this)
 
         setupToolbar()
         setupRecyclerView()
         setupAddButton()
         setupSwipeToDelete()
+        setupBulkToggle()
         observeStreamers()
         requestNotificationPermission()
-
-        BootReceiver.scheduleWork(this)
+        requestFullScreenPermissionIfNeeded()
+        refreshMonitoringState()
+        refreshActiveStrategyIndicator()
     }
 
-    private fun setupToolbar() {
-        setSupportActionBar(binding.toolbar)
-        binding.toolbar.title = ""
-        supportActionBar?.setDisplayHomeAsUpEnabled(false)
+    override fun onStart() {
+        super.onStart()
+        ContextCompat.registerReceiver(
+            this,
+            strategyStatusReceiver,
+            IntentFilter(HomeAgentWatchdog.ACTION_STATUS_CHANGED),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+    }
+
+    override fun onStop() {
+        unregisterReceiver(strategyStatusReceiver)
+        super.onStop()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        refreshActiveStrategyIndicator()
     }
 
     override fun onCreateOptionsMenu(menu: Menu?): Boolean {
@@ -69,104 +98,30 @@ class MainActivity : AppCompatActivity() {
         return true
     }
 
-    override fun onOptionsItemSelected(item: MenuItem): Boolean {
-    when (item.itemId) {
-        R.id.action_check_now -> {
-            forceCheckNow()
-            return true
+    override fun onOptionsItemSelected(item: MenuItem): Boolean = when (item.itemId) {
+        R.id.action_scheduled_alarms -> {
+            startActivity(Intent(this, ScheduledAlarmsActivity::class.java))
+            true
         }
         R.id.action_settings -> {
             startActivity(Intent(this, SettingsActivity::class.java))
-            return true
+            true
         }
-    }
-    return super.onOptionsItemSelected(item)
-}
-
-    private fun forceCheckNow() {
-        Toast.makeText(this, "🔄 Проверка запущена...", Toast.LENGTH_SHORT).show()
-        
-        lifecycleScope.launch {
-            val streamers = withContext(Dispatchers.IO) {
-                db.streamerDao().getAll()
-            }
-            
-            if (streamers.isEmpty()) {
-                Toast.makeText(this@MainActivity, "📭 Нет стримеров для проверки", Toast.LENGTH_SHORT).show()
-                return@launch
-            }
-            
-            val logins = streamers.filter { it.notifyEnabled }.map { it.login }
-            if (logins.isEmpty()) {
-                Toast.makeText(this@MainActivity, "⚠️ Все стримеры отключены", Toast.LENGTH_SHORT).show()
-                return@launch
-            }
-            
-            Toast.makeText(this@MainActivity, "🔍 Проверяем  стримеров...", Toast.LENGTH_SHORT).show()
-            
-            val results = withContext(Dispatchers.IO) {
-                TwitchApi.checkStreams(logins)
-            }
-            
-            var foundLive = false
-            results.forEach { info ->
-                val prev = withContext(Dispatchers.IO) {
-                    db.streamerDao().getByLogin(info.login)
-                } ?: return@forEach
-                
-                withContext(Dispatchers.IO) {
-                    db.streamerDao().updateLiveStatus(
-                        login       = info.login,
-                        isLive      = info.isLive,
-                        title       = info.title,
-                        viewers     = info.viewerCount,
-                        game        = info.gameName,
-                        displayName = info.displayName
-                    )
-                }
-                
-                if (info.isLive && prev.notifyEnabled) {
-                    foundLive = true
-                    showAlarmForStreamer(
-                        displayName = info.displayName,
-                        title = info.title,
-                        game = info.gameName,
-                        viewers = info.viewerCount
-                    )
-                }
-            }
-            
-            val msg = if (foundLive) {
-                "🔴 Найден стример в эфире!"
-            } else {
-                "✅ Все стримеры офлайн"
-            }
-            Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
-        }
+        else -> super.onOptionsItemSelected(item)
     }
 
-    private fun showAlarmForStreamer(displayName: String, title: String, game: String, viewers: Int) {
-        val intent = Intent(this, AlarmActivity::class.java).apply {
-            putExtra(AlarmActivity.EXTRA_STREAMER, displayName)
-            putExtra(AlarmActivity.EXTRA_TITLE, title)
-            putExtra(AlarmActivity.EXTRA_GAME, game)
-            putExtra(AlarmActivity.EXTRA_VIEWERS, viewers)
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
-        }
-        startActivity(intent)
+    private fun setupToolbar() {
+        setSupportActionBar(binding.toolbar)
+        supportActionBar?.title = getString(R.string.app_name)
+        supportActionBar?.setDisplayHomeAsUpEnabled(false)
     }
 
     private fun setupRecyclerView() {
         adapter = StreamerAdapter(
-            onToggle = { streamer, enabled ->
-                lifecycleScope.launch(Dispatchers.IO) {
-                    db.streamerDao().update(streamer.copy(notifyEnabled = enabled))
-                }
-            },
-            onDelete = { streamer -> confirmDelete(streamer) },
-            onTestAlarm = { streamer -> testAlarm(streamer) }
+            onToggle = { streamer, enabled -> updateToggle(streamer, enabled) },
+            onDelete = ::confirmDelete,
+            onTestAlarm = ::testAlarm
         )
-
         binding.recyclerView.apply {
             layoutManager = LinearLayoutManager(this@MainActivity)
             adapter = this@MainActivity.adapter
@@ -174,16 +129,41 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun updateToggle(streamer: Streamer, enabled: Boolean) {
+        lifecycleScope.launch(Dispatchers.IO) {
+            database.streamerDao().update(streamer.copy(notifyEnabled = enabled))
+            if (enabled) {
+                MonitoringController.start(this@MainActivity)
+            } else if (database.streamerDao().getEnabled().isEmpty()) {
+                MonitoringController.stop(this@MainActivity)
+            }
+        }
+    }
+
+
+    private fun setupBulkToggle() {
+        binding.switchAllNotify.setOnCheckedChangeListener { _, enabled ->
+            if (synchronizingBulkToggle) return@setOnCheckedChangeListener
+            lifecycleScope.launch(Dispatchers.IO) {
+                database.streamerDao().setAllNotifyEnabled(enabled)
+                if (enabled) {
+                    MonitoringController.start(this@MainActivity)
+                } else {
+                    MonitoringController.stop(this@MainActivity)
+                }
+            }
+        }
+    }
+
     private fun setupAddButton() {
         binding.btnAdd.setOnClickListener {
-            val input = binding.etNickname.text?.toString()?.trim()?.lowercase() ?: ""
-            if (input.isEmpty()) {
-                binding.etNickname.error = "Введи ник стримера"
+            val login = binding.etNickname.text?.toString()?.trim()?.lowercase().orEmpty()
+            if (login.isEmpty()) {
+                binding.etNickname.error = "Введите ник стримера"
                 return@setOnClickListener
             }
-            addStreamer(input)
+            addStreamer(login)
         }
-
         binding.etNickname.setOnEditorActionListener { _, _, _ ->
             binding.btnAdd.performClick()
             true
@@ -193,46 +173,42 @@ class MainActivity : AppCompatActivity() {
     private fun addStreamer(login: String) {
         binding.btnAdd.isEnabled = false
         binding.progressAdd.visibility = View.VISIBLE
-
         lifecycleScope.launch {
             val existing = withContext(Dispatchers.IO) {
-                db.streamerDao().getByLogin(login)
+                database.streamerDao().getByLogin(login)
             }
             if (existing != null) {
-                Toast.makeText(this@MainActivity, "Стример уже в списке", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@MainActivity, "Стример уже добавлен", Toast.LENGTH_SHORT).show()
                 resetAddButton()
                 return@launch
             }
 
             val info = withContext(Dispatchers.IO) { TwitchApi.checkStream(login) }
-
             if (info == null) {
-                Toast.makeText(this@MainActivity, "Ошибка сети. Проверь интернет.", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@MainActivity, "Ошибка сети. Проверьте интернет.", Toast.LENGTH_SHORT).show()
                 resetAddButton()
                 return@launch
             }
 
             withContext(Dispatchers.IO) {
-                db.streamerDao().insert(
+                database.streamerDao().insert(
                     Streamer(
-                        login       = login,
-                        displayName = info.displayName.ifEmpty { login },
-                        isLive      = info.isLive,
+                        login = login,
+                        displayName = info.displayName.ifBlank { login },
+                        isLive = info.isLive,
                         streamTitle = info.title,
                         viewerCount = info.viewerCount,
-                        gameName    = info.gameName
+                        gameName = info.gameName
                     )
                 )
             }
-
             binding.etNickname.setText("")
-
-            val msg = if (info.isLive) {
-                "🔴  уже в эфире!"
-            } else {
-                "✅  добавлен"
-            }
-            Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
+            MonitoringController.start(this@MainActivity)
+            Toast.makeText(
+                this@MainActivity,
+                if (info.isLive) "${info.displayName} уже в эфире" else "${info.displayName} добавлен",
+                Toast.LENGTH_SHORT
+            ).show()
             resetAddButton()
         }
     }
@@ -244,11 +220,18 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupSwipeToDelete() {
         val callback = object : ItemTouchHelper.SimpleCallback(0, ItemTouchHelper.LEFT) {
-            override fun onMove(rv: RecyclerView, vh: RecyclerView.ViewHolder, t: RecyclerView.ViewHolder) = false
-            override fun onSwiped(vh: RecyclerView.ViewHolder, dir: Int) {
-                val streamer = adapter.currentList[vh.adapterPosition]
+            override fun onMove(
+                recyclerView: RecyclerView,
+                viewHolder: RecyclerView.ViewHolder,
+                target: RecyclerView.ViewHolder
+            ) = false
+
+            override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) {
+                val position = viewHolder.adapterPosition
+                if (position == RecyclerView.NO_POSITION) return
+                val streamer = adapter.currentList[position]
                 confirmDelete(streamer)
-                adapter.notifyItemChanged(vh.adapterPosition)
+                adapter.notifyItemChanged(position)
             }
         }
         ItemTouchHelper(callback).attachToRecyclerView(binding.recyclerView)
@@ -257,10 +240,13 @@ class MainActivity : AppCompatActivity() {
     private fun confirmDelete(streamer: Streamer) {
         AlertDialog.Builder(this)
             .setTitle("Удалить стримера?")
-            .setMessage(" будет удалён из списка.")
+            .setMessage("${streamer.displayName.ifBlank { streamer.login }} будет удалён из списка.")
             .setPositiveButton("Удалить") { _, _ ->
                 lifecycleScope.launch(Dispatchers.IO) {
-                    db.streamerDao().delete(streamer)
+                    database.streamerDao().delete(streamer)
+                    if (database.streamerDao().getEnabled().isEmpty()) {
+                        MonitoringController.stop(this@MainActivity)
+                    }
                 }
             }
             .setNegativeButton("Отмена", null)
@@ -268,44 +254,123 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun testAlarm(streamer: Streamer) {
-        val intent = Intent(this, AlarmActivity::class.java).apply {
-            putExtra(AlarmActivity.EXTRA_STREAMER, streamer.displayName.ifEmpty { streamer.login })
-            putExtra(AlarmActivity.EXTRA_TITLE,    "Тест будильника")
-            putExtra(AlarmActivity.EXTRA_GAME,     "Minecraft")
-            putExtra(AlarmActivity.EXTRA_VIEWERS,  12345)
-        }
-        startActivity(intent)
+        AlarmPlaybackService.start(
+            context = this,
+            displayName = streamer.displayName.ifBlank { streamer.login },
+            title = "Тест будильника",
+            game = "Тестовый стрим",
+            viewers = 12_345
+        )
     }
 
     private fun observeStreamers() {
         lifecycleScope.launch {
-            db.streamerDao().getAllFlow().collect { streamers ->
+            database.streamerDao().getAllFlow().collect { streamers ->
                 adapter.submitList(streamers)
                 binding.tvEmpty.visibility = if (streamers.isEmpty()) View.VISIBLE else View.GONE
+                synchronizeBulkToggle(streamers)
+                refreshActiveStrategyIndicator()
+            }
+        }
+    }
+
+    private fun synchronizeBulkToggle(streamers: List<Streamer>) {
+        synchronizingBulkToggle = true
+        binding.switchAllNotify.visibility = if (streamers.isEmpty()) View.GONE else View.VISIBLE
+        binding.switchAllNotify.isChecked = streamers.isNotEmpty() && streamers.all { it.notifyEnabled }
+        synchronizingBulkToggle = false
+    }
+
+    private fun refreshActiveStrategyIndicator() {
+        lifecycleScope.launch(Dispatchers.IO) {
+            val hasEnabledStreamers = database.streamerDao().getEnabled().isNotEmpty()
+            val selected = MonitoringController.selectedStrategy(this@MainActivity)
+            val display = when {
+                !hasEnabledStreamers -> StrategyIndicator("Выключено", R.color.strategy_disabled)
+                selected == MonitoringStrategy.HOME_AGENT && HomeAgentWatchdog.isFallbackActive(this@MainActivity) -> {
+                    val fallbackName = when (HomeAgentWatchdog.fallbackStrategy(this@MainActivity)) {
+                        MonitoringStrategy.RELIABLE -> "надёжно"
+                        else -> "экономия"
+                    }
+                    StrategyIndicator("Фоллбэк: $fallbackName", R.color.strategy_fallback)
+                }
+                selected == MonitoringStrategy.HOME_AGENT -> {
+                    val lastHeartbeat = HomeAgentWatchdog.lastHeartbeatAt(this@MainActivity)
+                    when {
+                        lastHeartbeat == 0L -> StrategyIndicator("ПК: ожидание", R.color.strategy_home_agent)
+                        System.currentTimeMillis() - lastHeartbeat >= HomeAgentWatchdog.timeoutMillis(this@MainActivity) ->
+                            StrategyIndicator("ПК: нет связи", R.color.strategy_fallback)
+                        else -> StrategyIndicator("ПК: агент", R.color.strategy_home_agent)
+                    }
+                }
+                selected == MonitoringStrategy.RELIABLE -> StrategyIndicator("Телефон: надёжно", R.color.strategy_reliable)
+                else -> StrategyIndicator("Телефон: экономия", R.color.strategy_economy)
+            }
+            withContext(Dispatchers.Main) {
+                binding.chipActiveStrategy.text = display.label
+                binding.chipActiveStrategy.chipBackgroundColor = ContextCompat.getColorStateList(
+                    this@MainActivity,
+                    display.colorRes
+                )
+                binding.chipActiveStrategy.visibility = View.VISIBLE
+            }
+        }
+    }
+
+    private data class StrategyIndicator(val label: String, val colorRes: Int)
+
+    private fun refreshMonitoringState() {
+        lifecycleScope.launch(Dispatchers.IO) {
+            if (database.streamerDao().getEnabled().isEmpty()) {
+                MonitoringController.stop(this@MainActivity)
+            } else {
+                MonitoringController.start(this@MainActivity)
             }
         }
     }
 
     private fun requestNotificationPermission() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
-                != PackageManager.PERMISSION_GRANTED) {
-                notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-            }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
 
-    private fun showNotifPermDialog() {
+    private fun requestFullScreenPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) return
+        val manager = getSystemService(NotificationManager::class.java)
+        if (manager.canUseFullScreenIntent()) return
+
+        AlertDialog.Builder(this)
+            .setTitle("Разрешите полноэкранную тревогу")
+            .setMessage(
+                "Чтобы будильник открылся при выключенном или заблокированном экране, " +
+                    "разрешите полноэкранные уведомления для приложения."
+            )
+            .setPositiveButton("Открыть настройки") { _, _ ->
+                startActivity(Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT).apply {
+                    data = Uri.parse("package:$packageName")
+                })
+            }
+            .setNegativeButton("Позже", null)
+            .show()
+    }
+
+    private fun showNotificationPermissionDialog() {
         AlertDialog.Builder(this)
             .setTitle("Нужно разрешение на уведомления")
-            .setMessage("Без уведомлений будильник не сработает. Открыть настройки?")
+            .setMessage("Без уведомлений приложение не сможет показать тревогу при начале стрима.")
             .setPositiveButton("Настройки") { _, _ ->
                 startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
                     data = Uri.fromParts("package", packageName, null)
                 })
             }
-            .setNegativeButton("Пропустить", null)
+            .setNegativeButton("Позже", null)
             .show()
     }
-
 }
